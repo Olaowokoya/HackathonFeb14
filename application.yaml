@@ -1,0 +1,478 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+
+Description:
+  Sample Lex V2 Zip Code Bot using the CloudFormation Custom Resource from an
+  Serverless Application Repository (SAR) nested stack
+
+Parameters:
+  SarAppArn:
+    Description: >-
+      ARN of SAR Lex CloudFormation Custom Resource application
+    Type: String
+    Default: arn:aws:serverlessrepo:us-east-1:777566285978:applications/lex-v2-cfn-cr
+  SarAppVersion:
+    Description: >-
+      Semantic version of SAR Lex CloudFormation Custom Resource application
+    Type: String
+    Default: 0.3.0
+
+  # Capabilities:
+  #   Type: String
+  #   Description: Deployment capabilities
+  #   Default: "CAPABILITY_IAM"
+
+  # CustomResourceCodeBucket:
+  #     Description: S3 bucket where the Lambda bundle is located
+  #     Type: String
+  #     Default: artifact-jan18-104670088072
+
+  # CustomResourceCodeObject:
+  #     Type: String
+  #     Description: >
+  #         S3 object zip file containing Lambda functions
+  #     Default: artifact-jan18-104670088072/function-code.zip
+
+  #Versioning enable cloudformation to recognize code changes even if the object name remain the same
+  # CustomResourceCodeObjectVersion:
+  #     Type: String
+  #     Description: >
+  #         S3 object zip file version for Lambda functions
+  #     Default: artifact-jan18-104670088072/function-code.zip
+
+Resources:
+  # this deploys the Custom Resource as a nested CloudFormation stack
+  LexV2CfnCr:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location:
+        ApplicationId: !Ref SarAppArn
+        SemanticVersion: !Ref SarAppVersion
+      Parameters:
+        # Custom Resource Lambda log level
+        LogLevel: DEBUG
+
+  LexBot:
+    Type: Custom::LexBot
+    Properties:
+      # this references the Lambda function created by the Custom Resource stack
+      ServiceToken: !GetAtt LexV2CfnCr.Outputs.LexV2CfnCrFunctionArn
+      botName: !Sub "${AWS::StackName}-ZipCodeUpdate"
+      dataPrivacy:
+        childDirected: True
+      description: Test bot deployed using CloudFormation Custom Resource
+      idleSessionTTLInSeconds: 300
+      # this references the role created by the Custom Resource stack
+      roleArn: !GetAtt LexV2CfnCr.Outputs.LexServiceLinkedRole
+      CR.botLocales:
+        - localeId: en_US
+          nluIntentConfidenceThreshold: 0.40
+          voiceSettings:
+            voiceId: Salli
+          CR.slotTypes:
+            - slotTypeName: ZipCodeType
+              parentSlotTypeSignature: AMAZON.AlphaNumeric
+              valueSelectionSetting:
+                resolutionStrategy: OriginalValue
+                regexFilter:
+                  pattern: '[0-9]{8}'
+          CR.intents:
+            # The Fallback intent is automatically created by the Lex service
+            # This will update the default fallback intent
+            - intentName: FallbackIntent
+              description: Default fallback intent when no other intent matches
+              intentClosingSetting:
+                closingResponse:
+                  messageGroups:
+                    - message:
+                        plainTextMessage:
+                          value: Sorry I am having trouble understanding.
+            - intentName: UpdateZipCode
+              sampleUtterances:
+                - utterance: i want to change my zip code
+                - utterance: i have a new zip code
+                - utterance: my new zip code is {ZipCode}
+              CR.slots:
+                - slotName: ZipCode
+                  CR.slotTypeName: ZipCodeType
+                  valueElicitationSetting:
+                    slotConstraint: Required
+                    promptSpecification:
+                      messageGroups:
+                        - message:
+                            plainTextMessage:
+                              value: What is your zipcode?
+                      maxRetries: 2
+                      allowInterrupt: true
+
+  LexBotVersion:
+    # Bot versions are deleted by the Bot on Stack Deletions
+    DeletionPolicy: Retain
+    # Version number changes between updates which cause a CloudFormation
+    # delete event since the version number is the physical resource ID.
+    # The following policies prevents deletion events
+    UpdateReplacePolicy: Retain
+    Type: Custom::LexBotVersion
+    Properties:
+      ServiceToken: !GetAtt LexV2CfnCr.Outputs.LexV2CfnCrFunctionArn
+      botId: !Ref LexBot
+      CR.botLocaleIds: !GetAtt LexBot.botLocaleIds
+      CR.lastUpdatedDateTime: !GetAtt LexBot.lastUpdatedDateTime
+
+  LexBotAlias:
+    # Alias is deleted by the Bot on Stack Deletions
+    DeletionPolicy: Retain
+    Type: Custom::LexBotAlias
+    Properties:
+      ServiceToken: !GetAtt LexV2CfnCr.Outputs.LexV2CfnCrFunctionArn
+      botId: !Ref LexBot
+      botAliasName: live
+      botVersion: !Ref LexBotVersion
+      botAliasLocaleSettings:
+        en_US:
+          enabled: True
+    UpdateReplacePolicy: Retain
+
+
+  # Lambda function for custom resource
+  LexBotLambda:
+      Type: AWS::Lambda::Function
+      Properties:
+          Code: src/handlers
+          Handler: 1st-lambda-function.lambda_handler
+          Role: !GetAtt LexBotLambdaRole.Arn
+          Runtime: python3.7
+          Timeout: 300
+          TracingConfig:
+              Mode: Active
+
+  LexBotLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+          Path: /
+          AssumeRolePolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                  - Principal:
+                        Service:
+                            - lambda.amazonaws.com
+                    Effect: Allow
+                    Action:
+                        - sts:AssumeRole
+          Policies:
+              - PolicyName: LogsForLambda
+                PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                        - Effect: Allow
+                          Action:
+                              - logs:CreateLogGroup
+                              - logs:CreateLogStream
+                              - logs:PutLogEvents
+                          Resource:
+                              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+                              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*"
+              - PolicyName: LexGetLists
+                PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                        - Effect: Allow
+                          Action:
+                              - lex:GetBots
+                              - lex:GetBotAliases
+                              - lex:GetIntents
+                              - lex:GetSlotTypes
+                          Resource:
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:bot:*"
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:intent:*"
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:slottype:*"
+              - PolicyName: LexGet
+                PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                        - Effect: Allow
+                          Action:
+                              - lex:Get*
+                          Resource:
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:bot:*:*"
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:intent:*:*"
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:slottype:*"
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:slottype:*:*"
+              - PolicyName: LexMutating
+                PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                        - Effect: Allow
+                          Action:
+                              - lex:Put*
+                              - lex:Delete*
+                          Resource:
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:bot:*:*"
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:intent:*:*"
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:slottype:*"
+                              - !Sub "arn:aws:lex:${AWS::Region}:${AWS::AccountId}:slottype:*:*"
+              - PolicyName: XRay
+                PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                        - Effect: Allow
+                          Action:
+                              - xray:PutTraceSegments
+                              - xray:PutTelemetryRecords
+                          Resource: "*"
+              - PolicyName: AllowVPCSupport
+                PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                        - Effect: Allow
+                          Action:
+                              - ec2:DescribeNetworkInterfaces
+                              - ec2:CreateNetworkInterface
+                              - ec2:DeleteNetworkInterface
+                          Resource: "*"
+
+  #we'll uncomment this when we get this part of the code right.
+  # webacl1admuiipsetCF80C706:
+  #   Type: 'AWS::WAFv2::IPSet'
+  #   Properties:
+  #     Addresses:
+  #       - 10.0.0.0/32
+  #     IPAddressVersion: IPV4
+  #     Scope: CLOUDFRONT
+  #     Description: CIDR of allowed IP range
+  #     Name: Bcbsa_IP_Range
+  #   Metadata:
+  #     'aws:cdk:path': AdminUiStack/webacl1/adm-ui-ipset
+  # webacl1WafCloudFront431B3BB4:
+  #   Type: 'AWS::WAFv2::WebACL'
+  #   Properties:
+  #     DefaultAction:
+  #       Block: {}
+  #     Scope: CLOUDFRONT
+  #     VisibilityConfig:
+  #       CloudWatchMetricsEnabled: true
+  #       MetricName: waf-cloudfront
+  #       SampledRequestsEnabled: true
+  #     Description: WAFv2 ACL for CloudFront
+  #     Name: waf-cloudfront-Bcbsa
+  #     Rules:
+  #       - Action:
+  #           Allow: {}
+  #         Name: Allowed_IP
+  #         Priority: 1
+  #         Statement:
+  #           IPSetReferenceStatement:
+  #             Arn:
+  #               'Fn::GetAtt':
+  #                 - webacl1admuiipsetCF80C706
+  #                 - Arn
+  #         VisibilityConfig:
+  #           CloudWatchMetricsEnabled: true
+  #           MetricName: LimitIP
+  #           SampledRequestsEnabled: true
+  #   Metadata:
+  #     'aws:cdk:path': AdminUiStack/webacl1/WafCloudFront
+  # AdminUIBucketadmuis3bucket7CA559A1:
+  #   Type: 'AWS::S3::Bucket'
+  #   Properties:
+  #     BucketName: bcbsa-ui-bucket
+  #     CorsConfiguration:
+  #       CorsRules:
+  #         - AllowedHeaders:
+  #             - '*'
+  #           AllowedMethods:
+  #             - GET
+  #             - POST
+  #           AllowedOrigins:
+  #             - '*'
+  #     PublicAccessBlockConfiguration:
+  #       BlockPublicAcls: true
+  #       BlockPublicPolicy: true
+  #       IgnorePublicAcls: true
+  #       RestrictPublicBuckets: true
+  #   UpdateReplacePolicy: Delete
+  #   DeletionPolicy: Delete
+  #   Metadata:
+  #     'aws:cdk:path': AdminUiStack/Admin UI Bucket/adm-ui-s3-bucket/Resource
+  # AdminUIBucketadmuis3bucketPolicyD8BED482:
+  #   Type: 'AWS::S3::BucketPolicy'
+  #   Properties:
+  #     Bucket:
+  #       Ref: AdminUIBucketadmuis3bucket7CA559A1
+  #     PolicyDocument:
+  #       Statement:
+  #         - Action:
+  #             - 's3:GetObject*'
+  #             - 's3:GetBucket*'
+  #             - 's3:List*'
+  #           Effect: Allow
+  #           Principal:
+  #             CanonicalUser:
+  #               'Fn::GetAtt':
+  #                 - AdminUIBucketOAI6C823419
+  #                 - S3CanonicalUserId
+  #           Resource:
+  #             - 'Fn::GetAtt':
+  #                 - AdminUIBucketadmuis3bucket7CA559A1
+  #                 - Arn
+  #             - 'Fn::Join':
+  #                 - ''
+  #                 - - 'Fn::GetAtt':
+  #                       - AdminUIBucketadmuis3bucket7CA559A1
+  #                       - Arn
+  #                   - /*
+  #       Version: '2012-10-17'
+  #   Metadata:
+  #     'aws:cdk:path': AdminUiStack/Admin UI Bucket/adm-ui-s3-bucket/Policy/Resource
+  # AdminUIBucketOAI6C823419:
+  #   Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+  #   Properties:
+  #     CloudFrontOriginAccessIdentityConfig:
+  #       Comment: CLoudFront OAI for Admin UI offering
+  #   Metadata:
+  #     'aws:cdk:path': AdminUiStack/Admin UI Bucket/OAI/Resource
+  # AdminUIBucketcdkexampledistributionDA77BE77:
+  #   Type: 'AWS::CloudFront::Distribution'
+  #   Properties:
+  #     DistributionConfig:
+  #       DefaultCacheBehavior:
+  #         AllowedMethods:
+  #           - GET
+  #           - HEAD
+  #           - OPTIONS
+  #           - PUT
+  #           - PATCH
+  #           - POST
+  #           - DELETE
+  #         CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+  #         Compress: false
+  #         TargetOriginId: AdminUiStackAdminUIBucketcdkexampledistributionOrigin1AE74B895
+  #         ViewerProtocolPolicy: redirect-to-https
+  #       DefaultRootObject: index.html
+  #       Enabled: true
+  #       HttpVersion: http2
+  #       IPV6Enabled: true
+  #       Logging:
+  #         Bucket:
+  #           'Fn::GetAtt':
+  #             - AdminUIBucketadmuis3bucket7CA559A1
+  #             - RegionalDomainName
+  #         Prefix: logs/
+  #       Origins:
+  #         - DomainName:
+  #             'Fn::GetAtt':
+  #               - AdminUIBucketadmuis3bucket7CA559A1
+  #               - RegionalDomainName
+  #           Id: AdminUiStackAdminUIBucketcdkexampledistributionOrigin1AE74B895
+  #           OriginPath: /contents
+  #           S3OriginConfig:
+  #             OriginAccessIdentity:
+  #               'Fn::Join':
+  #                 - ''
+  #                 - - origin-access-identity/cloudfront/
+  #                   - Ref: AdminUIBucketOAI6C823419
+  #       PriceClass: PriceClass_All
+  #       Restrictions:
+  #         GeoRestriction:
+  #           Locations:
+  #             - US
+  #             - CA
+  #           RestrictionType: whitelist
+  #       WebACLId:
+  #         'Fn::GetAtt':
+  #           - webacl1WafCloudFront431B3BB4
+  #           - Arn
+  #   Metadata:
+  #     'aws:cdk:path': AdminUiStack/Admin UI Bucket/cdk-example-distribution/Resource
+  # cognitoconfigAdminUIUserPool47EDB5D4:
+  #   Type: 'AWS::Cognito::UserPool'
+  #   Properties:
+  #     AccountRecoverySetting:
+  #       RecoveryMechanisms:
+  #         - Name: verified_email
+  #           Priority: 1
+  #     AdminCreateUserConfig:
+  #       AllowAdminCreateUserOnly: true
+  #       InviteMessageTemplate:
+  #         EmailMessage: >-
+  #           Hello {username}, you have been invited to join Amazon connect Admin
+  #           tool! Your temporary password is {####}
+  #         EmailSubject: Invite to join Amazon connect Admin tool!
+  #     AutoVerifiedAttributes:
+  #       - email
+  #     EmailVerificationMessage: 'The verification code to your new account is {####}'
+  #     EmailVerificationSubject: Verify your new account
+  #     Schema:
+  #       - Mutable: false
+  #         Name: name
+  #         Required: false
+  #       - Mutable: true
+  #         Name: email
+  #         Required: true
+  #       - Mutable: true
+  #         Name: phone_number
+  #         Required: false
+  #     SmsVerificationMessage: 'The verification code to your new account is {####}'
+  #     UsernameAttributes:
+  #       - email
+  #     UserPoolName: admin-ui-sutapa
+  #     VerificationMessageTemplate:
+  #       DefaultEmailOption: CONFIRM_WITH_CODE
+  #       EmailMessage: 'The verification code to your new account is {####}'
+  #       EmailSubject: Verify your new account
+  #       SmsMessage: 'The verification code to your new account is {####}'
+  #   UpdateReplacePolicy: Retain
+  #   DeletionPolicy: Retain
+  #   Metadata:
+  #     'aws:cdk:path': AdminUiStack/cognito config/Admin UI User Pool/Resource
+  # cognitoconfiguserpoolclientBF9ED713:
+  #   Type: 'AWS::Cognito::UserPoolClient'
+  #   Properties:
+  #     UserPoolId:
+  #       Ref: cognitoconfigAdminUIUserPool47EDB5D4
+  #     AccessTokenValidity: 10
+  #     AllowedOAuthFlows:
+  #       - implicit
+  #       - code
+  #     AllowedOAuthFlowsUserPoolClient: true
+  #     AllowedOAuthScopes:
+  #       - email
+  #       - openid
+  #     CallbackURLs:
+  #       - 'Fn::Join':
+  #           - ''
+  #           - - 'https://'
+  #             - 'Fn::GetAtt':
+  #                 - AdminUIBucketcdkexampledistributionDA77BE77
+  #                 - DomainName
+  #             - /AdminPortal.html
+  #     ClientName: admin-ui-sutapa
+  #     ExplicitAuthFlows:
+  #       - ALLOW_CUSTOM_AUTH
+  #       - ALLOW_USER_SRP_AUTH
+  #       - ALLOW_REFRESH_TOKEN_AUTH
+  #     GenerateSecret: false
+  #     IdTokenValidity: 10
+  #     LogoutURLs:
+  #       - 'https://aws.amazon.com/'
+  #     PreventUserExistenceErrors: ENABLED
+  #     ReadAttributes:
+  #       - address
+
+Outputs:
+  LexBotId:
+    Description: Lex Bot ID
+    Value: !Ref LexBot
+
+  LexBotLocaleIds:
+    Description: Lex Bot Locale IDs
+    Value: !Join [",", !GetAtt LexBot.botLocaleIds]
+
+  LexBotLatestVersion:
+    Description: Latest Lex Bot Version ID
+    Value: !Ref LexBotVersion
+
+  LexBotAliasId:
+    Description: Lex Bot Alias ID
+    Value: !Ref LexBotAlias
+

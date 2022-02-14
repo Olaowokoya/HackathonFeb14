@@ -1,0 +1,733 @@
+# ? 2021 Amazon Web Services, Inc. or its affiliates. All Rights Reserved.
+
+#  Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#  Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance with
+#  the License. A copy of the License is located at
+#      http://aws.amazon.com/apache2.0/
+#  or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+#  CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and
+#  limitations under the License.
+
+# This AWS Content is provided subject to the terms of the AWS Customer Agreement
+# available at http://aws.amazon.com/agreement or other written agreement between
+# Customer and either Amazon Web Services, Inc. or Amazon Web Services EMEA SARL or both.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: AWS resources for CloudFormation infrastructure CI/CD Pipeline for cross account deployment
+
+Parameters:
+  ProjectName:
+    Description: Name of the Project
+    Type: String
+    Default: hackathon-feb14
+
+
+  # *** The remaining parameters should either be:
+  # - overridden via changing "Default" here (PREFERABLE, since then they're in source control)
+  # - or you can pass them in when creating / updating the stack
+ 
+  # *** The stack name for the actual application we're deploying
+  ApplicationStackName:
+    Type: String
+    Default: hackathon-codepipeline-feb14
+    AllowedPattern: "[A-Za-z0-9-]+"
+
+  DevAccountId:
+    Type: String
+    Description: The AWS Account ID for the Dev environment where the first deployment will take place
+    Default: '424779961545'
+    
+  ProdAccountId:
+    Type: String
+    Description: The AWS Account ID for the Prod environment where the second deployment will take place
+    Default: '659993572634'
+    
+
+  CodePipelineCrossAccountRoleArnDev:
+    Type: String
+    Description: CodePipeline IAM Role Name Arn copied from the output of Dev Crossaccount role stack
+    Default: 'arn:aws:iam::424779961545:role/DevCodePipeline-Cross-Account-Role-hackathon-feb14'
+
+  CFDeploymentCrossRoleArnDev:
+    Type: String
+    Description: CloudFormation IAM Role Name Arn copied from the output of Dev Crossaccount role stack
+    Default: 'arn:aws:iam::424779961545:role/DevCodePipeline-cloudformation-cross-hackathon-feb14'
+  
+  CodePipelineCrossAccountRoleArnProd:
+    Type: String
+    Description: CodePipeline IAM Role Name Arn copied from the output of Prod Crossaccount role stack
+    Default: 'arn:aws:iam::659993572634:role/ProdCodePipeline-Cross-Account-Role-hackathon-Feb14'
+
+  CFDeploymentCrossRoleArnProd:
+    Type: String
+    Description: CloudFormation IAM Role Name Arn copied from the output of Prod Cross account role stack
+    Default: 'arn:aws:iam::659993572634:role/ProdCodePipeline-cloudformation-cross-hackathon-feb14'
+
+  StackName:
+    Type: String
+    Description: CloudFormation stack name to create
+    MinLength: 1
+    Default: hackathon-feb14
+
+  TemplatePath:
+    Type: String
+    Description: Cloudformation template file path in the repository
+    MinLength: 1
+    Default: "application.yaml"
+
+  ConfigPath:
+    Type: String
+    Description: CloudFormation template configuration file path in the repository
+    MinLength: 1
+    Default: "config.json"
+
+  Capabilities:
+    Type: String
+    Description: Deployment capabilities
+    Default: "CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM,CAPABILITY_IAM"
+
+  CloudFormationPolicyArn:
+    Type: String
+    Description: CloudFormation IAM policy ARN
+    Default: "arn:aws:iam::aws:policy/AdministratorAccess"
+
+  CfnNagFailOnWarning:
+    Type: String
+    Description: Fail the build on cfn_nag warnings
+    Default: 'No'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+
+Mappings:
+  CfnNagFailFlag:
+    "Yes":
+      Flag: "-f"
+    "No":
+      Flag: ""
+
+
+# Resources declares the AWS resources that you want to include in the stack
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/resources-section-structure.html
+Resources:
+#This AWS customer managed KMS key will be created in the deploy account and it will be applied in codepipeline tools for encryption. 
+#It will be referenced in the crossaccount role template
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Used by Assumed Roles in Dev/Test/Prod accounts to Encrypt/Decrypt code
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: !Ref AWS::StackName
+        Statement:
+          -
+            Sid: Allows admin of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action:
+              - kms:*
+            Resource: "*"
+          -
+            Sid: Allow use of key in another account
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${DevAccountId}:root
+                - !Sub arn:aws:iam::${ProdAccountId}:root
+                # If adding additional accounts put them just in here! and add the parameter up the top!
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+      Tags: 
+        - Key: "Application"
+          Value: !Ref ApplicationStackName
+        - Key: "ProjectName"
+          Value: !Ref ProjectName
+  KMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/codepipeline-crossaccount-keyfeb14
+      TargetKeyId: !Ref KMSKey
+      
+#Creating the S3 bucket for storing build artifact. 
+  ArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${ProjectName}-artifact-bucket-${AWS::AccountId} #changed
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'aws:kms'
+              KMSMasterKeyID: !GetAtt KMSKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags: 
+        - Key: "Application"
+          Value: !Ref ApplicationStackName
+        - Key: "ProjectName"
+          Value: !Ref ProjectName
+
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${ProjectName}-source-bucket-${AWS::AccountId}  #changed 
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'aws:kms'
+              KMSMasterKeyID: !GetAtt KMSKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags: 
+        - Key: "Application"
+          Value: !Ref ApplicationStackName
+        - Key: "ProjectName"
+          Value: !Ref ProjectName
+
+#Bucket policy applicable to the the S3 bucket created above
+  ArtifactStoreBucketBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F16
+            reason: This bucket is shared to the organization and that is why it has a *
+    Properties:
+      Bucket: !Ref ArtifactStoreBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSGetBucket
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                - !Ref "CodePipelineCrossAccountRoleArnDev"
+                - !Ref "CFDeploymentCrossRoleArnDev"
+                - !Ref "CodePipelineCrossAccountRoleArnProd"
+                - !Ref "CFDeploymentCrossRoleArnProd"                
+            Action: 
+              - s3:GetBucket*
+              - s3:GetObject*
+              - s3:List*
+            Resource: 
+              - !Sub "${ArtifactStoreBucket.Arn}"
+              - !Sub "${ArtifactStoreBucket.Arn}/*"
+          - Sid: AWSGetObject
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                - !Ref "CodePipelineCrossAccountRoleArnDev"
+                - !Ref "CFDeploymentCrossRoleArnDev"
+                - !Ref "CodePipelineCrossAccountRoleArnProd"
+                - !Ref "CFDeploymentCrossRoleArnProd"                   
+            Action: 
+              - s3:PutObject*
+              - s3:Abort*
+            Resource: !Sub "${ArtifactStoreBucket.Arn}/*"
+
+#Bucket policy applicable to the S3 bucket created above
+  SourceBucketBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F16
+            reason: This bucket is shared to the organization and that is why it has a *
+    Properties:
+      Bucket: !Ref SourceBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSGetBucket
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                - !Ref "CodePipelineCrossAccountRoleArnDev"
+                - !Ref "CFDeploymentCrossRoleArnDev"
+                - !Ref "CodePipelineCrossAccountRoleArnProd"
+                - !Ref "CFDeploymentCrossRoleArnProd"                   
+            Action: 
+              - s3:GetBucket*
+              - s3:GetObject*
+              - s3:List*
+            Resource: 
+              - !Sub "${SourceBucket.Arn}"
+              - !Sub "${SourceBucket.Arn}/*"
+          - Sid: AWSGetObject
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                - !Ref "CodePipelineCrossAccountRoleArnDev"
+                - !Ref "CFDeploymentCrossRoleArnDev"
+                - !Ref "CodePipelineCrossAccountRoleArnProd"
+                - !Ref "CFDeploymentCrossRoleArnProd"                   
+            Action: 
+              - s3:PutObject*
+              - s3:Abort*
+            Resource: !Sub "${SourceBucket.Arn}/*"
+
+#Service role and policy for the codebuild project
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudWatchLogsPolicy
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - "*"
+              - Sid: CodeCommitPolicy
+                Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                Resource:
+                  - "*"
+              - Sid: S3GetObjectPolicy
+                Effect: Allow
+                Action:
+                  - s3:GetObject*
+                  - s3:GetObjectVersion*
+                  - s3:List*
+                  - s3:DeleteObject*
+                  - s3:PutObject*
+                  - s3:Abort*
+                Resource:
+                  - "*"
+              - Sid: S3PutObjectPolicy
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - "*"
+              - Sid: ECRPullPolicy
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource:
+                  - "*"
+              - Sid: ECRAuthPolicy
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource:
+                  - "*"
+              - Sid: S3BucketIdentity
+                Effect: Allow
+                Action:
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                Resource: "*"
+              - Sid: CloudFormationValidate
+                Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+              - Sid: ""
+                Effect: Allow
+                Action:
+                  - kms:*
+                Resource: !GetAtt KMSKey.Arn
+      Tags: 
+        - Key: "Application"
+          Value: !Ref ApplicationStackName
+        - Key: "ProjectName"
+          Value: !Ref ProjectName
+
+#Codepipeline service role and policies for codepipeline operation.
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - cloudformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: AllowAccessToArtifactBucket
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject*"
+                  - "s3:GetBucket*"
+                  - "s3:List*"
+                  - "s3:DeleteObject*"
+                  - "s3:PutObject*"
+                  - "s3:Abort*"
+                Resource: 
+                  - !Sub "${ArtifactStoreBucket.Arn}/*"
+                  - !Sub "${ArtifactStoreBucket.Arn}"
+                  - !Sub "${SourceBucket.Arn}"
+                  - !Sub "${SourceBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                Resource: !GetAtt KMSKey.Arn
+        - PolicyName: AllowAccessToCloudFormation
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "cloudformation:CreateStack"
+                  - "cloudformation:DeleteStack"
+                  - "cloudformation:DescribeStacks"
+                  - "cloudformation:UpdateStack"
+                  - "cloudformation:CreateChangeSet"
+                  - "cloudformation:DeleteChangeSet"
+                  - "cloudformation:DescribeChangeSet"
+                  - "cloudformation:ExecuteChangeSet"
+                  - "cloudformation:SetStackPolicy"
+                  - "cloudformation:ValidateTemplate"
+                Resource: 
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${StackName}/*"
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${DevAccountId}:stack/${StackName}/*"
+                  - !Sub "arn:aws:cloudformation:${AWS::Region}:${ProdAccountId}:stack/${StackName}/*"
+        - PolicyName: AllowCodeBuildAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "codebuild:BatchGetBuilds"
+                  - "codebuild:StartBuild"
+                Resource: "*"
+        - PolicyName: AllowPassRoleToCloudFormation
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "iam:PassRole"
+                Resource: !GetAtt CloudFormationRole.Arn   
+        - PolicyName: AllowCodePipelineCrossAccountAssumeRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sts:AssumeRole"
+                Resource: 
+                  - !Ref CodePipelineCrossAccountRoleArnDev
+                  - !Ref CodePipelineCrossAccountRoleArnProd              
+        - PolicyName: AllowAssumeCFDeploymentRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sts:AssumeRole"
+                Resource:
+                  - !Ref CFDeploymentCrossRoleArnDev
+                  - !Ref CFDeploymentCrossRoleArnProd
+        - PolicyName: AllowCodepipelinePublishToSNS
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sns:Publish"
+                Resource: "*"
+      Tags: 
+        - Key: "Application"
+          Value: !Ref ApplicationStackName
+        - Key: "ProjectName"
+          Value: !Ref ProjectName
+
+#Below is the role and policy that will allow cloudformation operation in the pipeline process
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref CloudFormationPolicyArn
+      Policies:
+        - PolicyName: AllowCloudformationToCreateChangeSet
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "cloudformation:CreateChangeSet"
+                Resource:
+                  - !Ref CodePipelineCrossAccountRoleArnDev
+                  - !Ref CodePipelineCrossAccountRoleArnProd
+        - PolicyName: AllowCodePipelineCrossAccountAssumeRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sts:AssumeRole"
+                Resource:
+                  - !Ref CodePipelineCrossAccountRoleArnDev
+                  - !Ref CodePipelineCrossAccountRoleArnProd
+        - PolicyName: AllowAssumeCFDeploymentRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sts:AssumeRole"
+                Resource:
+                  - !Ref CFDeploymentCrossRoleArnDev
+                  - !Ref CFDeploymentCrossRoleArnProd
+                  - 'codestar-connections:UseConnection'
+                Resource: '*'
+                Effect: Allow
+      Tags: 
+        - Key: "Application"
+          Value: !Ref ApplicationStackName
+        - Key: "ProjectName"
+          Value: !Ref ProjectName
+
+#Creating a code build project for compling the cousrce code and creating the build artifact
+  CodeBuildProject:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Description: !Join 
+        - ''
+        - - 'AWS CloudFormation created CodeBuild App for '
+          - !Ref ProjectName
+      EncryptionKey: !Ref KMSKey
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Packaging: zip
+        Type: codepipeline
+      Environment:
+        ComputeType: small
+        Image: 'aws/codebuild/amazonlinux2-x86_64-standard:3.0'
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: S3_BUCKET
+            Value: !Ref ArtifactStoreBucket
+          - Name: APP_ID
+            Value: !Ref ProjectName
+          - Name: ACCOUNT_ID
+            Value: !Ref 'AWS::AccountId'
+          - Name: PARTITION
+            Value: !Ref 'AWS::Partition'
+      Source:
+        Type: codepipeline
+      Name: !Ref ProjectName
+
+# Creating an SNS topic that'll be used to notify the applicable person whenever the pipeline reaches the manual approval stage.
+# It will be referenced in the manual approval stage of the codepipeline.
+  MySNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+      - Endpoint: "oowokoya@amazon.com"
+        Protocol: email
+      Tags: 
+        - Key: "Application"
+          Value: !Ref ApplicationStackName
+        - Key: "ProjectName"
+          Value: !Ref ProjectName
+      
+# Below is the main pipeline resources including source stage, build stage, deploy stage and manual approval stage.
+# The pipeline is configured to deployed to another aws accounts apart from the one in which the pipeline was created.
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref ArtifactStoreBucket
+        Type: "S3"
+        EncryptionKey:
+          Id: !GetAtt KMSKey.Arn
+          Type: KMS
+      RoleArn: !GetAtt PipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+          - Name: Source
+            InputArtifacts: []
+            ActionTypeId:
+              Category: Source
+              Owner: AWS
+              Version: 1
+              Provider: S3
+            OutputArtifacts:
+            - Name: SourceCode
+            Configuration:
+              PollForSourceChanges: 'true'
+              S3Bucket: !Sub ${ProjectName}-source-bucket-${AWS::AccountId}  #changed
+              S3ObjectKey: template.zip
+            RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: Build-CloudFormation
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceCode
+              OutputArtifacts:
+                - Name: BuildArtifact
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 2
+        - Name: Deploy_Dev
+          Actions:
+            - Name: GenerateChangeSet
+              InputArtifacts:
+                - Name: BuildArtifact
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              OutputArtifacts:
+                - Name: DeployDevOutputArtifact
+              RoleArn: !Ref CodePipelineCrossAccountRoleArnDev
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: !Sub "testing-${ProjectName}"
+                ChangeSetName: !Sub "testing-${ProjectName}"
+                Capabilities: !Ref Capabilities
+                RoleArn: !Ref CFDeploymentCrossRoleArnDev
+                TemplatePath: !Sub "BuildArtifact::output-application.yaml"
+                OutputFileName: "output.json"
+              RunOrder: 4
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              RoleArn: !Ref CodePipelineCrossAccountRoleArnDev
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                Capabilities: !Ref Capabilities
+                RoleArn: !Ref CFDeploymentCrossRoleArnDev
+                StackName: !Sub "testing-${ProjectName}"
+                ChangeSetName: !Sub "testing-${ProjectName}"
+              RunOrder: 5
+        - Name: ApprovalForProd
+          Actions:
+            - Name: Approve
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: "1"
+                Provider: Manual
+              InputArtifacts: []
+              Configuration: 
+                NotificationArn: !Ref MySNSTopic
+              RunOrder: 3
+        - Name: Deploy_Prod
+          Actions:
+            - Name: GenerateChangeSet
+              InputArtifacts:
+                - Name: BuildArtifact
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              OutputArtifacts:
+                - Name: DeployProdOutputArtifact
+              RoleArn: !Ref CodePipelineCrossAccountRoleArnProd
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                StackName: !Sub "testing-${ProjectName}"
+                ChangeSetName: !Sub "testing-${ProjectName}"
+                Capabilities: !Ref Capabilities
+                RoleArn: !Ref CFDeploymentCrossRoleArnProd
+                TemplatePath: !Sub "BuildArtifact::output-application.yaml"
+                OutputFileName: "output.json"
+              RunOrder: 4
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              RoleArn: !Ref CodePipelineCrossAccountRoleArnProd
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                Capabilities: !Ref Capabilities
+                RoleArn: !Ref CFDeploymentCrossRoleArnProd
+                StackName: !Sub "testing-${ProjectName}"
+                ChangeSetName: !Sub "testing-${ProjectName}"
+              RunOrder: 5
+
+
+# Creating a webhook tools for triggering the codepipeline as soon as code change is pushed to the source repository.
+  # GithubWebhook:
+  #   Type: 'AWS::CodePipeline::Webhook'
+  #   Properties:
+  #     RegisterWithThirdParty: 'no'
+  #     Filters:
+  #     - JsonPath: "$.ref"
+  #       MatchEquals: refs/heads/{Branch}
+  #     TargetPipeline: !Ref Pipeline
+  #     TargetAction: Source
+  #     TargetPipelineVersion: !GetAtt Pipeline.Version
+
+Outputs:
+  KMSKeyArn:
+    Value: !GetAtt KMSKey.Arn
+  DeployAccount:
+    Value: !Sub ${AWS::AccountId}
+
+
+
