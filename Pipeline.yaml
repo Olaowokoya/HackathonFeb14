@@ -16,58 +16,55 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: AWS resources for CloudFormation infrastructure CI/CD Pipeline for cross account deployment
 
 Parameters:
+  #This can be any name selected for the project. Example 'hackathon-feb14'
   ProjectName:
     Description: Name of the Project
     Type: String
-    Default: hackathon-feb14
-
+  
+  #This is the project environment name selected for each AWS account. Example are Dev, UAT, QA, Prod
+  Environment:
+    Description: Project environment name
+    Type: String
 
   # *** The remaining parameters should either be:
   # - overridden via changing "Default" here (PREFERABLE, since then they're in source control)
   # - or you can pass them in when creating / updating the stack
  
-  # *** The stack name for the actual application we're deploying
-  ApplicationStackName:
-    Type: String
-    Default: hackathon-codepipeline-feb14
-    AllowedPattern: "[A-Za-z0-9-]+"
-
+  #The ID of the account where application will be first deployed into. In this case it's Dev and the ID is '424779961545'.
   DevAccountId:
     Type: String
     Description: The AWS Account ID for the Dev environment where the first deployment will take place
-    Default: '424779961545'
     
+  #The ID of the second account where application will be deployed into. In this case it's Prod and the ID is '659993572634'.
   ProdAccountId:
     Type: String
     Description: The AWS Account ID for the Prod environment where the second deployment will take place
-    Default: '659993572634'
     
-
+  #Select and copy the ARN of the CodePipeline Cross account role created in the Dev. You'll find it in the output of the cross account role cloudformation stack created earlier.
   CodePipelineCrossAccountRoleArnDev:
     Type: String
     Description: CodePipeline IAM Role Name Arn copied from the output of Dev Crossaccount role stack
-    Default: 'arn:aws:iam::424779961545:role/DevCodePipeline-Cross-Account-Role-hackathon-feb14'
 
+  #Select and copy the ARN of the Cloudformation Cross account role created in the Dev. You'll find it in the output of the cross account role cloudformation stack created earlier.
   CFDeploymentCrossRoleArnDev:
     Type: String
     Description: CloudFormation IAM Role Name Arn copied from the output of Dev Crossaccount role stack
-    Default: 'arn:aws:iam::424779961545:role/DevCodePipeline-cloudformation-cross-hackathon-feb14'
   
+  #Select and copy the ARN of the CodePipeline Cross account role created in the Dev. You'll find it in the output of the cross account role cloudformation stack created earlier.
   CodePipelineCrossAccountRoleArnProd:
     Type: String
     Description: CodePipeline IAM Role Name Arn copied from the output of Prod Crossaccount role stack
-    Default: 'arn:aws:iam::659993572634:role/ProdCodePipeline-Cross-Account-Role-hackathon-Feb14'
 
+  #Select and copy the ARN of the Cloudformation Cross account role created in the Prod. You'll find it in the output of the cross account role cloudformation stack created earlier.
   CFDeploymentCrossRoleArnProd:
     Type: String
     Description: CloudFormation IAM Role Name Arn copied from the output of Prod Cross account role stack
-    Default: 'arn:aws:iam::659993572634:role/ProdCodePipeline-cloudformation-cross-hackathon-feb14'
 
-  StackName:
-    Type: String
-    Description: CloudFormation stack name to create
-    MinLength: 1
-    Default: hackathon-feb14
+  # StackName:
+  #   Type: String
+  #   Description: CloudFormation stack name to create
+  #   MinLength: 1
+  #   Default: hackathon-feb14
 
   TemplatePath:
     Type: String
@@ -145,8 +142,8 @@ Resources:
               - kms:DescribeKey
             Resource: "*"
       Tags: 
-        - Key: "Application"
-          Value: !Ref ApplicationStackName
+        - Key: "Environment"
+          Value: !Ref Environment
         - Key: "ProjectName"
           Value: !Ref ProjectName
   KMSAlias:
@@ -159,7 +156,7 @@ Resources:
   ArtifactStoreBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub ${ProjectName}-artifact-bucket-${AWS::AccountId} #changed
+      BucketName: !Sub ${ProjectName}-artifact-bucket 
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -173,15 +170,15 @@ Resources:
       VersioningConfiguration:
         Status: Enabled
       Tags: 
-        - Key: "Application"
-          Value: !Ref ApplicationStackName
+        - Key: "Environment"
+          Value: !Ref Environment
         - Key: "ProjectName"
           Value: !Ref ProjectName
 
   SourceBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub ${ProjectName}-source-bucket-${AWS::AccountId}  #changed 
+      BucketName: !Sub ${ProjectName}-source-bucket  #changed 
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -195,8 +192,8 @@ Resources:
       VersioningConfiguration:
         Status: Enabled
       Tags: 
-        - Key: "Application"
-          Value: !Ref ApplicationStackName
+        - Key: "Environment"
+          Value: !Ref Environment
         - Key: "ProjectName"
           Value: !Ref ProjectName
 
@@ -366,8 +363,8 @@ Resources:
                   - kms:*
                 Resource: !GetAtt KMSKey.Arn
       Tags: 
-        - Key: "Application"
-          Value: !Ref ApplicationStackName
+        - Key: "Environment"
+          Value: !Ref Environment
         - Key: "ProjectName"
           Value: !Ref ProjectName
 
@@ -477,8 +474,8 @@ Resources:
                   - "sns:Publish"
                 Resource: "*"
       Tags: 
-        - Key: "Application"
-          Value: !Ref ApplicationStackName
+        - Key: "Environment"
+          Value: !Ref Environment
         - Key: "ProjectName"
           Value: !Ref ProjectName
 
@@ -532,8 +529,8 @@ Resources:
                 Resource: '*'
                 Effect: Allow
       Tags: 
-        - Key: "Application"
-          Value: !Ref ApplicationStackName
+        - Key: "Environment"
+          Value: !Ref Environment
         - Key: "ProjectName"
           Value: !Ref ProjectName
 
@@ -576,8 +573,8 @@ Resources:
       - Endpoint: "oowokoya@amazon.com"
         Protocol: email
       Tags: 
-        - Key: "Application"
-          Value: !Ref ApplicationStackName
+        - Key: "Environment"
+          Value: !Ref Environment
         - Key: "ProjectName"
           Value: !Ref ProjectName
       
@@ -607,7 +604,7 @@ Resources:
             - Name: SourceCode
             Configuration:
               PollForSourceChanges: 'true'
-              S3Bucket: !Sub ${ProjectName}-source-bucket-${AWS::AccountId}  #changed
+              S3Bucket: !Sub ${ProjectName}-source-bucket
               S3ObjectKey: template.zip
             RunOrder: 1
         - Name: Build
@@ -640,8 +637,8 @@ Resources:
               RoleArn: !Ref CodePipelineCrossAccountRoleArnDev
               Configuration:
                 ActionMode: CHANGE_SET_REPLACE
-                StackName: !Sub "testing-${ProjectName}"
-                ChangeSetName: !Sub "testing-${ProjectName}"
+                StackName: !Sub "Dev-${ProjectName}"
+                ChangeSetName: !Sub "Dev-${ProjectName}"
                 Capabilities: !Ref Capabilities
                 RoleArn: !Ref CFDeploymentCrossRoleArnDev
                 TemplatePath: !Sub "BuildArtifact::output-application.yaml"
@@ -658,8 +655,8 @@ Resources:
                 ActionMode: CHANGE_SET_EXECUTE
                 Capabilities: !Ref Capabilities
                 RoleArn: !Ref CFDeploymentCrossRoleArnDev
-                StackName: !Sub "testing-${ProjectName}"
-                ChangeSetName: !Sub "testing-${ProjectName}"
+                StackName: !Sub "Dev-${ProjectName}"
+                ChangeSetName: !Sub "Dev-${ProjectName}"
               RunOrder: 5
         - Name: ApprovalForProd
           Actions:
@@ -688,8 +685,8 @@ Resources:
               RoleArn: !Ref CodePipelineCrossAccountRoleArnProd
               Configuration:
                 ActionMode: CHANGE_SET_REPLACE
-                StackName: !Sub "testing-${ProjectName}"
-                ChangeSetName: !Sub "testing-${ProjectName}"
+                StackName: !Sub "Prod-${ProjectName}"
+                ChangeSetName: !Sub "Prod-${ProjectName}"
                 Capabilities: !Ref Capabilities
                 RoleArn: !Ref CFDeploymentCrossRoleArnProd
                 TemplatePath: !Sub "BuildArtifact::output-application.yaml"
@@ -706,22 +703,9 @@ Resources:
                 ActionMode: CHANGE_SET_EXECUTE
                 Capabilities: !Ref Capabilities
                 RoleArn: !Ref CFDeploymentCrossRoleArnProd
-                StackName: !Sub "testing-${ProjectName}"
-                ChangeSetName: !Sub "testing-${ProjectName}"
+                StackName: !Sub "Prod-${ProjectName}"
+                ChangeSetName: !Sub "Prod-${ProjectName}"
               RunOrder: 5
-
-
-# Creating a webhook tools for triggering the codepipeline as soon as code change is pushed to the source repository.
-  # GithubWebhook:
-  #   Type: 'AWS::CodePipeline::Webhook'
-  #   Properties:
-  #     RegisterWithThirdParty: 'no'
-  #     Filters:
-  #     - JsonPath: "$.ref"
-  #       MatchEquals: refs/heads/{Branch}
-  #     TargetPipeline: !Ref Pipeline
-  #     TargetAction: Source
-  #     TargetPipelineVersion: !GetAtt Pipeline.Version
 
 Outputs:
   KMSKeyArn:

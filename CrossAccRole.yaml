@@ -9,48 +9,34 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Role to be assumed by CodePipeline service cross account
 Parameters:
-  S3BucketCloudFormationFiles:
-    Description: S3 Bucket in Dev Account, which holds the artifacts built by codebuild
-    Type: String
-    Default: 'hackathon-feb14-artifact-bucket-109882984759'
-    
+  #ID of the sharetool account where the CICD pipeline is being created. example 109882984759
   DeployAccount:
     Description: AWS AccountNumber for share-tool Account
     Type: String
-    Default: '109882984759'
 
-  CPCrossAccountRoleName:
-    Description: Codepipeline cross account role name for test env
+  #This is the project environment name selected for each AWS account. Example are Dev, UAT, QA, Prod
+  Environment:
+    Description: Project environment name
     Type: String
-    Default: 'ProdCodePipeline-Cross-Account-Role-hackathon-Feb14'
-
-  CodePipelineCloudFormationDeployRoleName:
-    Description: Cloudformation cross account role name for test env
-    Type: String
-    Default: 'ProdCodePipeline-cloudformation-cross-hackathon-feb14'
-
+  
+  #This is the ARN of the KMS Key created in the sharetool account. Use the supplied placeholder below and repalce with the actual KMS ARN after pipeline.yaml stack is created. 
+  #The actual figure will be in the output of the pipeline.yaml cloudformation stack 
   KMSKeyArn:
     Description: ARN of the KMS key in Dev account
     Type: String
     Default: 'arn:aws:kms:us-east-1:109882984759:key/926300aa-a765-4788-8e0f-4a19bcfe27ea'
 
+  #This can be any name selected for the project. Example 'hackathon-feb14'
   ProjectName:
     Description: Name of the Project
     Type: String
-    Default: 'hackathon-feb14'
-
-  # *** The stack name for the actual application we're deploying
-  ApplicationStackName:
-    Type: String
-    Default: 'hackathon-stack-feb14'
-    AllowedPattern: "[A-Za-z0-9-]+"
 
 Resources:
 # Role required for cross account cloudformation stack creation with cdepipeline
   CPCrossAccountRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Ref CPCrossAccountRoleName
+      RoleName: !Sub ${Environment}-CodePipeline-CrossAccountRole-${ProjectName}       
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -63,8 +49,8 @@ Resources:
               - sts:AssumeRole
       Path: /
       Tags: 
-        - Key: "Application"
-          Value: !Ref ApplicationStackName
+        - Key: "Environment"
+          Value: !Ref Environment
         - Key: "ProjectName"
           Value: !Ref ProjectName
 #Policy to be attached to Crossaccount codepipeline role
@@ -98,7 +84,7 @@ Resources:
   CodePipelineCloudFormationDeployRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Ref CodePipelineCloudFormationDeployRoleName
+      RoleName: !Sub ${Environment}-Cloudformation-CrossAccountRole-${ProjectName}   
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -114,7 +100,7 @@ Resources:
   CFDeployerPolicy:
     Type: AWS::IAM::Policy
     Properties:
-      PolicyName: CFDeployerPolicy
+      PolicyName: !Sub ${Environment}-CFDeployerPolicy
       PolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -145,8 +131,8 @@ Resources:
               - s3:GetObject
               - s3:ListBucket
             Resource:
-             - !Join ['',['arn:aws:s3:::',!Ref S3BucketCloudFormationFiles, '/*']]
-             - !Join ['',['arn:aws:s3:::',!Ref S3BucketCloudFormationFiles]]
+             - !Join ['',['arn:aws:s3:::',!Sub ${ProjectName}-artifact-bucket, '/*']]
+             - !Join ['',['arn:aws:s3:::',!Sub ${ProjectName}-artifact-bucket]]
              - 'arn:aws:s3:::awsserverlessrepo-*'
              - 'arn:aws:s3:::awsserverlessrepo-*/*'
           - 

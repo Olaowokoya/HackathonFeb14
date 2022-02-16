@@ -10,9 +10,7 @@ phases:
       - gem install cfn-nag
   pre_build:
     commands:
-      - mkdir function-code
-      - cp -r src/handlers function-code
-      - "aws cloudformation package --template-file application.yaml --s3-bucket hackathon-feb14-artifact-bucket-109882984759 --output-template-file output-application.yaml"
+      - "aws cloudformation package --template-file application.yaml --s3-bucket hackathon-feb14-artifact-bucket --output-template-file output-application.yaml"
       - "cat application.yaml"
       - "aws cloudformation validate-template --template-body file://application.yaml"
   build:
@@ -20,16 +18,7 @@ phases:
     # Run cfn-lint and cfn-nag test on the cloudformation template
       #- cfn-lint application.yaml
       #- cfn_nag_scan -i application.yaml
-    # Zip the Lambda function code and upload it to S3
-      # - echo "Zipping deployment package..."
-      # - cd function-code
-      # - zip -r function-code.zip .
-      #- zip -r9 ../deployment-package.zip .
-      #- cd ..
-      #- zip -g deployment-package.zip 1st-lambda-function.py
-      #- zip -g deployment-package.zip 2nd-lambda-function.py
-      # - aws s3 cp function-code.zip s3://hackathon-feb14-artifact-bucket-109882984759/
-      - aws cloudformation package --s3-bucket hackathon-feb14-artifact-bucket-109882984759 --template-file application.yaml --output-template-file output-application.yaml
+      - aws cloudformation package --s3-bucket hackathon-feb14-artifact-bucket --template-file application.yaml --output-template-file output-application.yaml
   post_build:
     commands:
       - echo Build completed on 'date'
