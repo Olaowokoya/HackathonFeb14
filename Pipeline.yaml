@@ -60,6 +60,12 @@ Parameters:
     Type: String
     Description: CloudFormation IAM Role Name Arn copied from the output of Prod Cross account role stack
 
+  #Input the email of the designated person for the sns notification.
+  SNS-Email:
+    Type: String
+    Description: Email of the designated person for the sns notification
+
+
   # StackName:
   #   Type: String
   #   Description: CloudFormation stack name to create
@@ -570,7 +576,7 @@ Resources:
     Type: AWS::SNS::Topic
     Properties:
       Subscription:
-      - Endpoint: "oowokoya@amazon.com"
+      - Endpoint: !Ref SNS-Email
         Protocol: email
       Tags: 
         - Key: "Environment"
